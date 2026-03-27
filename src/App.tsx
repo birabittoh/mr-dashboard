@@ -1,0 +1,635 @@
+import { useState, useCallback, useRef } from "react";
+
+// ── Types ────────────────────────────────────────────────────────────────────
+
+interface Coords {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface LogEvent {
+  timestamp: string;
+  ip: string;
+  uuid: string;
+  action: string;
+  status?: string;
+  name?: string;
+  itemType?: string;
+  variant?: number;
+  coords?: Coords;
+  emojiIndex?: number;
+  emoji?: string;
+  [key: string]: unknown;
+}
+
+interface Session {
+  uuid: string;
+  user: string;
+  ip: string;
+  loginTime: string;
+  logoutTime: string | null;
+  status: string;
+  durationSec: number | null;
+  actions: LogEvent[];
+}
+
+type IpNames = Record<string, string>;
+
+// ── Parser ───────────────────────────────────────────────────────────────────
+
+function parseLog(raw: string): Session[] {
+  const lines = raw.split("\n");
+  const joined: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith("{")) {
+      joined.push(trimmed);
+    } else if (joined.length) {
+      joined[joined.length - 1] += trimmed;
+    }
+  }
+
+  const events: LogEvent[] = [];
+  for (const line of joined) {
+    try {
+      events.push(JSON.parse(line) as LogEvent);
+    } catch {
+      // skip malformed lines
+    }
+  }
+
+  const openSessions: Record<string, Session[]> = {};
+  const floatingActions: LogEvent[] = [];
+
+  for (const ev of events) {
+    if (!ev.uuid) continue;
+    if (ev.action === "login") {
+      if (!openSessions[ev.uuid]) openSessions[ev.uuid] = [];
+      openSessions[ev.uuid].push({
+        uuid: ev.uuid,
+        user: ev.name ?? ev.uuid.slice(0, 8),
+        ip: ev.ip,
+        loginTime: ev.timestamp,
+        logoutTime: null,
+        status: ev.status ?? "new",
+        durationSec: null,
+        actions: [],
+      });
+    } else if (ev.action === "logout") {
+      const stack = openSessions[ev.uuid];
+      if (stack?.length) {
+        const sess = [...stack].reverse().find((s) => !s.logoutTime);
+        if (sess) {
+          sess.logoutTime = ev.timestamp;
+          sess.durationSec = Math.round(
+            (new Date(ev.timestamp).getTime() -
+              new Date(sess.loginTime).getTime()) /
+              1000
+          );
+        }
+      }
+    } else {
+      floatingActions.push(ev);
+    }
+  }
+
+  const flat: Session[] = Object.values(openSessions).flat();
+  for (const act of floatingActions) {
+    const t = new Date(act.timestamp).getTime();
+    const target = flat.find((s) => {
+      if (s.uuid !== act.uuid) return false;
+      const lo = new Date(s.loginTime).getTime();
+      const hi = s.logoutTime ? new Date(s.logoutTime).getTime() : Infinity;
+      return t >= lo && t <= hi;
+    });
+    if (target) target.actions.push(act);
+  }
+
+  flat.sort(
+    (a, b) => new Date(a.loginTime).getTime() - new Date(b.loginTime).getTime()
+  );
+  return flat;
+}
+
+// ── Formatters ───────────────────────────────────────────────────────────────
+
+function fmtDuration(sec: number | null): string {
+  if (sec === null) return "—";
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+function fmtTime(ts: string): string {
+  return new Date(ts).toISOString().slice(11, 19);
+}
+
+function fmtDate(ts: string): string {
+  return new Date(ts).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+  });
+}
+
+function fmtActionDesc(ev: LogEvent): string {
+  if (ev.action === "place_furniture") {
+    const item = ((ev.itemType as string) ?? "").replace(/_/g, " ");
+    const v = ev.variant != null ? ` v${ev.variant}` : "";
+    const c = ev.coords
+      ? ` @ (${ev.coords.x}, ${ev.coords.y}, ${ev.coords.z})`
+      : "";
+    return `Place ${item}${v}${c}`;
+  }
+  if (ev.action === "unlock_emoji") {
+    return `Unlock emoji #${ev.emojiIndex}${ev.emoji ? " " + ev.emoji : ""}`;
+  }
+  return ev.action.replace(/_/g, " ");
+}
+
+const ACTION_DOT: Record<string, string> = {
+  place_furniture: "bg-sky-400",
+  unlock_emoji: "bg-emerald-400",
+  default: "bg-zinc-400",
+};
+
+// ── IpLabel — clickable IP that opens an inline rename field ─────────────────
+
+function IpLabel({
+  ip,
+  ipNames,
+  onRename,
+  className = "",
+}: {
+  ip: string;
+  ipNames: IpNames;
+  onRename: (ip: string, name: string) => void;
+  className?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const displayName = ipNames[ip];
+
+  function startEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    setDraft(displayName ?? ip);
+    setEditing(true);
+    setTimeout(() => inputRef.current?.select(), 0);
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    onRename(ip, trimmed || ip);
+    setEditing(false);
+  }
+
+  function onKey(e: React.KeyboardEvent) {
+    if (e.key === "Enter") commit();
+    if (e.key === "Escape") setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1 ${className}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <input
+          ref={inputRef}
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={onKey}
+          className="font-mono text-xs bg-zinc-800 border border-zinc-600 rounded px-1.5 py-0.5 text-zinc-200 outline-none focus:border-sky-500 w-36"
+        />
+      </span>
+    );
+  }
+
+  return (
+    <span
+      onClick={startEdit}
+      title={displayName ? `${displayName} (${ip}) — click to rename` : "Click to assign a name"}
+      className={`inline-flex items-center gap-1 cursor-pointer group/ip ${className}`}
+    >
+      <span className="font-mono text-xs text-zinc-500 group-hover/ip:text-zinc-300 transition-colors">
+        {displayName ?? ip}
+      </span>
+      {displayName && (
+        <span className="font-mono text-xs text-zinc-700 group-hover/ip:text-zinc-500 transition-colors">
+          ({ip})
+        </span>
+      )}
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="text-zinc-700 group-hover/ip:text-zinc-400 transition-colors shrink-0"
+      >
+        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" />
+      </svg>
+    </span>
+  );
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function MetricCard({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="bg-zinc-900 rounded-xl p-4 flex flex-col gap-1 border border-zinc-800">
+      <span className="text-xs text-zinc-500 uppercase tracking-widest">{label}</span>
+      <span className="text-3xl font-light text-zinc-100 tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function Badge({ status }: { status: string }) {
+  const cls =
+    status === "returning"
+      ? "bg-emerald-950 text-emerald-400 border border-emerald-800"
+      : "bg-sky-950 text-sky-400 border border-sky-800";
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${cls}`}>
+      {status}
+    </span>
+  );
+}
+
+function SessionRow({
+  session,
+  selected,
+  ipNames,
+  onRename,
+  onClick,
+}: {
+  session: Session;
+  selected: boolean;
+  ipNames: IpNames;
+  onRename: (ip: string, name: string) => void;
+  onClick: () => void;
+}) {
+  return (
+    <tr
+      onClick={onClick}
+      className={`cursor-pointer transition-colors ${
+        selected ? "bg-zinc-700/60" : "hover:bg-zinc-800/50"
+      }`}
+    >
+      <td className="py-2.5 px-3 font-mono text-xs text-zinc-400 whitespace-nowrap">
+        {fmtDate(session.loginTime)}
+      </td>
+      <td className="py-2.5 px-3">
+        <span className="text-zinc-200 text-sm">{session.user}</span>
+        <span className="text-zinc-600 font-mono text-xs ml-2">
+          {session.uuid.slice(0, 8)}
+        </span>
+      </td>
+      <td className="py-2.5 px-3">
+        <IpLabel ip={session.ip} ipNames={ipNames} onRename={onRename} />
+      </td>
+      <td className="py-2.5 px-3">
+        <Badge status={session.status} />
+      </td>
+      <td className="py-2.5 px-3 font-mono text-xs text-zinc-400 text-right">
+        {fmtDuration(session.durationSec)}
+      </td>
+    </tr>
+  );
+}
+
+function DurationBar({
+  sessions,
+  selected,
+  onSelect,
+}: {
+  sessions: Session[];
+  selected: number | null;
+  onSelect: (i: number) => void;
+}) {
+  const max = Math.max(...sessions.map((s) => s.durationSec ?? 0), 1);
+  return (
+    <div className="flex flex-col gap-1">
+      {sessions.map((s, i) => {
+        const pct = Math.max(((s.durationSec ?? 0) / max) * 100, 0.5);
+        const isRet = s.status === "returning";
+        return (
+          <div
+            key={s.uuid + s.loginTime}
+            className="flex items-center gap-2 cursor-pointer group"
+            onClick={() => onSelect(i)}
+          >
+            <span className="text-zinc-600 font-mono text-xs w-16 shrink-0 text-right truncate">
+              {s.user}
+            </span>
+            <div className="flex-1 h-5 relative flex items-center">
+              <div
+                className={`h-full rounded transition-all ${
+                  selected === i ? "opacity-100" : "opacity-60 group-hover:opacity-80"
+                } ${isRet ? "bg-emerald-500" : "bg-sky-500"}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+            <span className="text-zinc-600 font-mono text-xs w-12 shrink-0">
+              {fmtDuration(s.durationSec)}
+            </span>
+          </div>
+        );
+      })}
+      <div className="flex gap-4 mt-1 ml-[72px]">
+        <span className="flex items-center gap-1.5 text-xs text-zinc-600">
+          <span className="w-2.5 h-2.5 rounded-sm bg-sky-500 inline-block" /> new
+        </span>
+        <span className="flex items-center gap-1.5 text-xs text-zinc-600">
+          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" /> returning
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DetailPanel({
+  session,
+  ipNames,
+  onRename,
+}: {
+  session: Session | null;
+  ipNames: IpNames;
+  onRename: (ip: string, name: string) => void;
+}) {
+  if (!session) {
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-zinc-600 text-sm gap-2 py-16">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M9 12h6M9 16h3M5 8h14M3 5a2 2 0 012-2h14a2 2 0 012 2v14a2 2 0 01-2 2H5a2 2 0 01-2-2V5z" />
+        </svg>
+        <span>Select a session to inspect</span>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="mb-4 pb-3 border-b border-zinc-800">
+        <div className="text-zinc-200 font-medium">{session.user}</div>
+        <div className="text-zinc-500 font-mono text-xs mt-0.5">
+          {fmtDate(session.loginTime)} · {fmtTime(session.loginTime)} —{" "}
+          {session.logoutTime ? fmtTime(session.logoutTime) : "active"} ·{" "}
+          {fmtDuration(session.durationSec)}
+        </div>
+        <div className="flex gap-2 mt-2 items-center">
+          <Badge status={session.status} />
+          <IpLabel ip={session.ip} ipNames={ipNames} onRename={onRename} />
+        </div>
+      </div>
+      {session.actions.length === 0 ? (
+        <p className="text-zinc-600 text-sm">No in-session actions.</p>
+      ) : (
+        <div className="flex flex-col">
+          {session.actions.map((a, i) => {
+            const dotCls = ACTION_DOT[a.action] ?? ACTION_DOT["default"];
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-3 py-2.5 border-b border-zinc-800/60 last:border-0"
+              >
+                <span className="font-mono text-xs text-zinc-600 shrink-0 mt-0.5 w-16">
+                  {fmtTime(a.timestamp)}
+                </span>
+                <span className={`w-2 h-2 rounded-full mt-1.5 shrink-0 ${dotCls}`} />
+                <span className="text-sm text-zinc-300">{fmtActionDesc(a)}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Drop zone ────────────────────────────────────────────────────────────────
+
+function DropZone({
+  onFile,
+  compact = false,
+}: {
+  onFile: (text: string, name: string) => void;
+  compact?: boolean;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const readFile = useCallback(
+    (file: File) => {
+      const reader = new FileReader();
+      reader.onload = (e) => onFile(e.target!.result as string, file.name);
+      reader.readAsText(file);
+    },
+    [onFile]
+  );
+
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+      }}
+      onClick={() => inputRef.current?.click()}
+      className={`border-2 border-dashed rounded-2xl flex flex-col items-center gap-3 cursor-pointer transition-colors ${
+        dragging ? "border-sky-500 bg-sky-500/5" : "border-zinc-700 hover:border-zinc-500"
+      } ${compact ? "p-6" : "p-16"}`}
+    >
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-zinc-500">
+        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
+        <polyline points="14 2 14 8 20 8" />
+        <line x1="12" y1="18" x2="12" y2="12" />
+        <line x1="9" y1="15" x2="15" y2="15" />
+      </svg>
+      <div className="text-center">
+        <p className="text-zinc-300 font-medium text-sm">
+          {compact ? "Load a different file" : "Drop your service.log here"}
+        </p>
+        <p className="text-zinc-600 text-xs mt-1">or click to browse</p>
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".log,.txt,text/plain"
+        className="hidden"
+        onChange={(e) => { if (e.target.files?.[0]) readFile(e.target.files[0]); }}
+      />
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [filename, setFilename] = useState("");
+  const [selected, setSelected] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [ipNames, setIpNames] = useState<IpNames>({});
+
+  const handleFile = useCallback((text: string, name: string) => {
+    setError("");
+    try {
+      const s = parseLog(text);
+      if (!s.length)
+        throw new Error("No login/logout pairs found. Check the file format.");
+      setSessions(s);
+      setFilename(name);
+      setSelected(null);
+      // preserve existing ip names across file reloads
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Unknown parse error");
+    }
+  }, []);
+
+  const handleRename = useCallback((ip: string, name: string) => {
+    setIpNames((prev) => {
+      // if the user cleared back to the raw IP, remove the alias
+      if (name === ip) {
+        const next = { ...prev };
+        delete next[ip];
+        return next;
+      }
+      return { ...prev, [ip]: name };
+    });
+  }, []);
+
+  const totalActions = sessions.reduce((a, s) => a + s.actions.length, 0);
+  const uniqueUsers = new Set(sessions.map((s) => s.uuid)).size;
+  const uniqueIPs = new Set(sessions.map((s) => s.ip)).size;
+
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 font-sans">
+      <div className="max-w-6xl mx-auto space-y-5">
+
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-medium text-zinc-100 tracking-tight">service.log</h1>
+            {filename && (
+              <p className="text-xs text-zinc-600 mt-0.5 font-mono">{filename}</p>
+            )}
+          </div>
+          {sessions.length > 0 && (
+            <label className="cursor-pointer">
+              <span className="text-xs text-zinc-400 border border-zinc-700 rounded-lg px-3 py-1.5 hover:border-zinc-500 hover:text-zinc-200 transition-colors">
+                Load file
+              </span>
+              <input
+                type="file"
+                accept=".log,.txt,text/plain"
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.[0]) {
+                    const r = new FileReader();
+                    r.onload = (ev) =>
+                      handleFile(ev.target!.result as string, e.target.files![0].name);
+                    r.readAsText(e.target.files[0]);
+                  }
+                }}
+              />
+            </label>
+          )}
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="bg-red-950/50 border border-red-800 rounded-xl px-4 py-3 text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
+        {sessions.length === 0 ? (
+          <DropZone onFile={handleFile} />
+        ) : (
+          <>
+            {/* Metrics */}
+            <div className="grid grid-cols-4 gap-3">
+              <MetricCard label="Sessions" value={sessions.length} />
+              <MetricCard label="Unique users" value={uniqueUsers} />
+              <MetricCard label="Unique IPs" value={uniqueIPs} />
+              <MetricCard label="Actions" value={totalActions} />
+            </div>
+
+            {/* Duration chart */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
+              <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">
+                Session duration
+              </p>
+              <DurationBar
+                sessions={sessions}
+                selected={selected}
+                onSelect={(i) => setSelected(i === selected ? null : i)}
+              />
+            </div>
+
+            {/* Table + detail */}
+            <div className="grid grid-cols-5 gap-4">
+              <div className="col-span-3 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
+                <div className="px-4 pt-4 pb-2">
+                  <p className="text-xs text-zinc-500 uppercase tracking-widest">Sessions</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-zinc-800">
+                        {["Date", "User", "IP", "Status", "Duration"].map((h) => (
+                          <th
+                            key={h}
+                            className="py-2 px-3 text-xs text-zinc-600 font-medium uppercase tracking-wider whitespace-nowrap"
+                          >
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sessions.map((s, i) => (
+                        <SessionRow
+                          key={s.uuid + s.loginTime}
+                          session={s}
+                          selected={selected === i}
+                          ipNames={ipNames}
+                          onRename={handleRename}
+                          onClick={() => setSelected(i === selected ? null : i)}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="col-span-2 bg-zinc-900 border border-zinc-800 rounded-2xl p-5 min-h-48">
+                <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">
+                  {selected !== null ? "Actions" : "Inspector"}
+                </p>
+                <DetailPanel
+                  session={selected !== null ? sessions[selected] : null}
+                  ipNames={ipNames}
+                  onRename={handleRename}
+                />
+              </div>
+            </div>
+
+            {/* Reload drop zone */}
+            <DropZone onFile={handleFile} compact />
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
