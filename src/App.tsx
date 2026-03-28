@@ -149,6 +149,17 @@ function parseLogTimestamp(filename: string): string | null {
   });
 }
 
+function parseLogName(filename: string): string {
+  // 20260328-090714-my-service.log -> my-service
+  const cleaned = filename.replace(/\.log$|\.txt$/i, "");
+  const parts = cleaned.split("-");
+  // if it matches our timestamp format, the first two parts are date and time
+  if (parts.length >= 3 && /^\d{8}$/.test(parts[0]) && /^\d{6}$/.test(parts[1])) {
+    return parts.slice(2).join("-");
+  }
+  return cleaned;
+}
+
 function fmtActionDesc(ev: LogEvent): string {
   if (ev.action === "place_furniture") {
     const item = ((ev.itemType as string) ?? "").replace(/_/g, " ");
@@ -546,15 +557,14 @@ export default function App() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-medium text-zinc-100 tracking-tight">service.log</h1>
-            {filename && (
+            <h1 className="text-lg font-medium text-zinc-100 tracking-tight">
+              {filename ? parseLogName(filename) : "service.log"}
+            </h1>
+            {filename && parseLogTimestamp(filename) && (
               <div className="flex flex-col md:flex-row md:items-center md:gap-3 mt-0.5">
-                <p className="text-xs text-zinc-600 font-mono">{filename}</p>
-                {parseLogTimestamp(filename) && (
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
-                    Last updated: {parseLogTimestamp(filename)}
-                  </span>
-                )}
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
+                  Last updated: {parseLogTimestamp(filename)}
+                </span>
               </div>
             )}
           </div>
