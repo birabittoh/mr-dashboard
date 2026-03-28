@@ -592,7 +592,7 @@ export default function App() {
         ) : (
           <>
             {/* Metrics */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <MetricCard label="Sessions" value={sessions.length} />
               <MetricCard label="Unique users" value={uniqueUsers} />
               <MetricCard label="Unique IPs" value={uniqueIPs} />
