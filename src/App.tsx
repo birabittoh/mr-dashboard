@@ -132,6 +132,34 @@ function fmtDate(ts: string): string {
   });
 }
 
+function parseLogTimestamp(filename: string): string | null {
+  // 20260328-090714-my-service.log
+  const match = filename.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  const date = new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}`);
+  if (isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function parseLogName(filename: string): string {
+  // 20260328-090714-my-service.log -> my-service
+  const cleaned = filename.replace(/\.log$|\.txt$/i, "");
+  const parts = cleaned.split("-");
+  // if it matches our timestamp format, the first two parts are date and time
+  if (parts.length >= 3 && /^\d{8}$/.test(parts[0]) && /^\d{6}$/.test(parts[1])) {
+    return parts.slice(2).join("-");
+  }
+  return cleaned;
+}
+
 function fmtActionDesc(ev: LogEvent): string {
   if (ev.action === "place_furniture") {
     const item = ((ev.itemType as string) ?? "").replace(/_/g, " ");
@@ -480,6 +508,7 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [ipNames, setIpNames] = useState<IpNames>({});
+  const actionsRef = useRef<HTMLDivElement>(null);
 
   const handleFile = useCallback((text: string, name: string) => {
     setError("");
@@ -493,6 +522,15 @@ export default function App() {
       // preserve existing ip names across file reloads
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown parse error");
+    }
+  }, []);
+
+  const selectSession = useCallback((i: number | null) => {
+    setSelected(i);
+    if (i !== null && window.innerWidth < 768) {
+      setTimeout(() => {
+        actionsRef.current?.scrollIntoView({ behavior: "smooth" });
+      }, 0);
     }
   }, []);
 
@@ -519,9 +557,15 @@ export default function App() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-medium text-zinc-100 tracking-tight">service.log</h1>
-            {filename && (
-              <p className="text-xs text-zinc-600 mt-0.5 font-mono">{filename}</p>
+            <h1 className="text-lg font-medium text-zinc-100 tracking-tight">
+              {filename ? parseLogName(filename) : "service.log"}
+            </h1>
+            {filename && parseLogTimestamp(filename) && (
+              <div className="flex flex-col md:flex-row md:items-center md:gap-3 mt-0.5">
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-medium">
+                  Last updated: {parseLogTimestamp(filename)}
+                </span>
+              </div>
             )}
           </div>
           {sessions.length > 0 && (
@@ -558,7 +602,7 @@ export default function App() {
         ) : (
           <>
             {/* Metrics */}
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <MetricCard label="Sessions" value={sessions.length} />
               <MetricCard label="Unique users" value={uniqueUsers} />
               <MetricCard label="Unique IPs" value={uniqueIPs} />
@@ -573,13 +617,13 @@ export default function App() {
               <DurationBar
                 sessions={sessions}
                 selected={selected}
-                onSelect={(i) => setSelected(i === selected ? null : i)}
+                onSelect={(i) => selectSession(i === selected ? null : i)}
               />
             </div>
 
             {/* Table + detail */}
-            <div className="grid grid-cols-5 gap-4">
-              <div className="col-span-3 bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className={`${selected !== null ? 'md:col-span-3' : 'md:col-span-5'} bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden`}>
                 <div className="px-4 pt-4 pb-2">
                   <p className="text-xs text-zinc-500 uppercase tracking-widest">Sessions</p>
                 </div>
@@ -605,7 +649,7 @@ export default function App() {
                           selected={selected === i}
                           ipNames={ipNames}
                           onRename={handleRename}
-                          onClick={() => setSelected(i === selected ? null : i)}
+                          onClick={() => selectSession(i === selected ? null : i)}
                         />
                       ))}
                     </tbody>
@@ -613,20 +657,22 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="col-span-2 bg-zinc-900 border border-zinc-800 rounded-2xl p-5 min-h-48">
-                <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">
-                  {selected !== null ? "Actions" : "Inspector"}
-                </p>
-                <DetailPanel
-                  session={selected !== null ? sessions[selected] : null}
-                  ipNames={ipNames}
-                  onRename={handleRename}
-                />
-              </div>
+              {selected !== null && (
+                <div
+                  ref={actionsRef}
+                  className="md:col-span-2 bg-zinc-900 border border-zinc-800 rounded-2xl p-5 min-h-48"
+                >
+                  <p className="text-xs text-zinc-500 uppercase tracking-widest mb-4">
+                    Actions
+                  </p>
+                  <DetailPanel
+                    session={sessions[selected]}
+                    ipNames={ipNames}
+                    onRename={handleRename}
+                  />
+                </div>
+              )}
             </div>
-
-            {/* Reload drop zone */}
-            <DropZone onFile={handleFile} compact />
           </>
         )}
       </div>
