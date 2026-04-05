@@ -181,6 +181,14 @@ const ACTION_DOT: Record<string, string> = {
   default: "bg-zinc-400",
 };
 
+const ACTION_ICON: Record<string, string> = {
+  place_furniture: "🛋️",
+  unlock_emoji: "✨",
+  login: "🚀",
+  logout: "💤",
+  default: "🔹",
+};
+
 // ── IpLabel — clickable IP that opens an inline rename field ─────────────────
 
 function IpLabel({
@@ -295,12 +303,16 @@ function Badge({ status }: { status: string }) {
 function SessionRow({
   session,
   selected,
+  multiSelected,
+  onMultiSelect,
   ipNames,
   onRename,
   onClick,
 }: {
   session: Session;
   selected: boolean;
+  multiSelected: boolean;
+  onMultiSelect: (checked: boolean) => void;
   ipNames: IpNames;
   onRename: (ip: string, name: string) => void;
   onClick: () => void;
@@ -312,6 +324,14 @@ function SessionRow({
         selected ? "bg-zinc-700/60" : "hover:bg-zinc-800/50"
       }`}
     >
+      <td className="py-2.5 px-3" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          checked={multiSelected}
+          onChange={(e) => onMultiSelect(e.target.checked)}
+          className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-zinc-900"
+        />
+      </td>
       <td className="py-2.5 px-3 font-mono text-xs text-zinc-400 whitespace-nowrap">
         {fmtDate(session.loginTime)}
       </td>
@@ -379,6 +399,92 @@ function DurationBar({
         <span className="flex items-center gap-1.5 text-xs text-zinc-600">
           <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" /> returning
         </span>
+      </div>
+    </div>
+  );
+}
+
+function Timeline({
+  sessions,
+}: {
+  sessions: Session[];
+}) {
+  if (sessions.length === 0) return null;
+
+  const startTimes = sessions.map((s) => new Date(s.loginTime).getTime());
+  const endTimes = sessions.map((s) =>
+    s.logoutTime ? new Date(s.logoutTime).getTime() : Date.now()
+  );
+
+  const minTime = Math.min(...startTimes);
+  const maxTime = Math.max(...endTimes);
+  const range = maxTime - minTime || 1;
+
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 overflow-hidden">
+      <p className="text-xs text-zinc-500 uppercase tracking-widest mb-6">
+        Multi-session Timeline
+      </p>
+      <div className="relative space-y-1.5 pt-8">
+        {/* Time markers */}
+        <div className="absolute top-0 left-0 w-full flex justify-between px-1 border-b border-zinc-800 pb-1.5">
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {new Date(minTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+          <span className="text-[10px] text-zinc-500 font-mono">
+            {new Date(maxTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </span>
+        </div>
+
+        {sessions.map((s) => {
+          const start = new Date(s.loginTime).getTime();
+          const end = s.logoutTime ? new Date(s.logoutTime).getTime() : Date.now();
+          const left = ((start - minTime) / range) * 100;
+          const width = ((end - start) / range) * 100;
+
+          return (
+            <div key={s.uuid + s.loginTime} className="relative h-8 group/row">
+              <div
+                className={`absolute top-0 h-full rounded-lg transition-all flex items-center px-3 overflow-hidden ${
+                  s.status === "returning" ? "bg-emerald-500/10 border border-emerald-500/30" : "bg-sky-500/10 border border-sky-500/30"
+                }`}
+                style={{ left: `${left}%`, width: `${Math.max(width, 0.5)}%` }}
+              >
+                <div className="text-[10px] font-mono truncate whitespace-nowrap pointer-events-none flex items-center gap-2 shrink-0">
+                  <span className="text-zinc-200 font-medium">{s.user}</span>
+                  <span className="text-zinc-500 text-[9px]">
+                    {fmtTime(s.loginTime)} – {s.logoutTime ? fmtTime(s.logoutTime) : "now"}
+                  </span>
+                </div>
+                {/* Action markers */}
+                {s.actions.map((a, i) => {
+                  const aTime = new Date(a.timestamp).getTime();
+                  const aLeft = ((aTime - start) / (end - start || 1)) * 100;
+                  const icon = ACTION_ICON[a.action] || ACTION_ICON.default;
+
+                  return (
+                    <div
+                      key={i}
+                      className="absolute group/icon cursor-default"
+                      style={{ left: `${aLeft}%`, transform: 'translateX(-50%)' }}
+                    >
+                      <span className="text-xs filter drop-shadow-sm group-hover/icon:scale-125 transition-transform inline-block">
+                        {icon}
+                      </span>
+                      {/* Tooltip */}
+                      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover/icon:block z-50">
+                        <div className="bg-zinc-800 text-zinc-100 text-[10px] py-1.5 px-2.5 rounded shadow-xl border border-zinc-700 whitespace-nowrap">
+                          <div className="font-bold border-b border-zinc-700 pb-1 mb-1">{fmtTime(a.timestamp)}</div>
+                          {fmtActionDesc(a)}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -452,6 +558,8 @@ function DropZone({
   compact?: boolean;
 }) {
   const [dragging, setDragging] = useState(false);
+  const [pasting, setPasting] = useState(false);
+  const [pastedText, setPastedText] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const readFile = useCallback(
@@ -463,39 +571,100 @@ function DropZone({
     [onFile]
   );
 
-  return (
-    <div
-      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
-      }}
-      onClick={() => inputRef.current?.click()}
-      className={`border-2 border-dashed rounded-2xl flex flex-col items-center gap-3 cursor-pointer transition-colors ${
-        dragging ? "border-sky-500 bg-sky-500/5" : "border-zinc-700 hover:border-zinc-500"
-      } ${compact ? "p-6" : "p-16"}`}
-    >
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" className="text-zinc-500">
-        <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
-        <polyline points="14 2 14 8 20 8" />
-        <line x1="12" y1="18" x2="12" y2="12" />
-        <line x1="9" y1="15" x2="15" y2="15" />
-      </svg>
-      <div className="text-center">
-        <p className="text-zinc-300 font-medium text-sm">
-          {compact ? "Load a different file" : "Drop your service.log here"}
-        </p>
-        <p className="text-zinc-600 text-xs mt-1">or click to browse</p>
+  if (pasting) {
+    return (
+      <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-zinc-300">Paste log content</span>
+          <button
+            onClick={() => setPasting(false)}
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+        <textarea
+          autoFocus
+          className="w-full h-64 bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-xs font-mono text-zinc-400 focus:border-sky-500 outline-none resize-none"
+          placeholder='{"timestamp": "...", "action": "login", ...}'
+          value={pastedText}
+          onChange={(e) => setPastedText(e.target.value)}
+        />
+        <button
+          onClick={() => {
+            if (pastedText.trim()) {
+              onFile(pastedText, "pasted-log.log");
+              setPasting(false);
+              setPastedText("");
+            }
+          }}
+          disabled={!pastedText.trim()}
+          className="w-full bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium py-2.5 rounded-xl transition-colors"
+        >
+          Parse log
+        </button>
       </div>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".log,.txt,text/plain"
-        className="hidden"
-        onChange={(e) => { if (e.target.files?.[0]) readFile(e.target.files[0]); }}
-      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+        }}
+        onClick={() => inputRef.current?.click()}
+        className={`border-2 border-dashed rounded-2xl flex flex-col items-center gap-3 cursor-pointer transition-colors ${
+          dragging
+            ? "border-sky-500 bg-sky-500/5"
+            : "border-zinc-700 hover:border-zinc-500"
+        } ${compact ? "p-6" : "p-16"}`}
+      >
+        <svg
+          width="28"
+          height="28"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          className="text-zinc-500"
+        >
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="12" y1="18" x2="12" y2="12" />
+          <line x1="9" y1="15" x2="15" y2="15" />
+        </svg>
+        <div className="text-center">
+          <p className="text-zinc-300 font-medium text-sm">
+            {compact ? "Load a different file" : "Drop your service.log here"}
+          </p>
+          <p className="text-zinc-600 text-xs mt-1">or click to browse</p>
+        </div>
+        <input
+          ref={inputRef}
+          type="file"
+          accept=".log,.txt,text/plain"
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files?.[0]) readFile(e.target.files[0]);
+          }}
+        />
+      </div>
+      {!compact && (
+        <button
+          onClick={() => setPasting(true)}
+          className="w-full border border-zinc-800 hover:border-zinc-700 bg-zinc-900/50 text-zinc-400 hover:text-zinc-200 text-xs font-medium py-3 rounded-2xl transition-all"
+        >
+          or paste log content directly
+        </button>
+      )}
     </div>
   );
 }
@@ -506,6 +675,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [filename, setFilename] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
+  const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
   const [ipNames, setIpNames] = useState<IpNames>({});
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -519,6 +689,7 @@ export default function App() {
       setSessions(s);
       setFilename(name);
       setSelected(null);
+      setMultiSelected(new Set());
       // preserve existing ip names across file reloads
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown parse error");
@@ -631,6 +802,25 @@ export default function App() {
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="border-b border-zinc-800">
+                        <th className="py-2 px-3 w-8">
+                          <input
+                            type="checkbox"
+                            checked={
+                              sessions.length > 0 &&
+                              multiSelected.size === sessions.length
+                            }
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setMultiSelected(
+                                  new Set(sessions.map((_, i) => i))
+                                );
+                              } else {
+                                setMultiSelected(new Set());
+                              }
+                            }}
+                            className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-sky-500 focus:ring-sky-500 focus:ring-offset-zinc-900"
+                          />
+                        </th>
                         {["Date", "User", "IP", "Status", "Duration"].map((h) => (
                           <th
                             key={h}
@@ -647,6 +837,15 @@ export default function App() {
                           key={s.uuid + s.loginTime}
                           session={s}
                           selected={selected === i}
+                          multiSelected={multiSelected.has(i)}
+                          onMultiSelect={(checked) => {
+                            setMultiSelected((prev) => {
+                              const next = new Set(prev);
+                              if (checked) next.add(i);
+                              else next.delete(i);
+                              return next;
+                            });
+                          }}
                           ipNames={ipNames}
                           onRename={handleRename}
                           onClick={() => selectSession(i === selected ? null : i)}
@@ -673,6 +872,11 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {/* Timeline */}
+            <Timeline
+              sessions={sessions.filter((_, i) => multiSelected.has(i))}
+            />
           </>
         )}
       </div>
