@@ -425,7 +425,7 @@ function Timeline({
       <p className="text-xs text-zinc-500 uppercase tracking-widest mb-6">
         Multi-session Timeline
       </p>
-      <div className="relative space-y-8 pt-8">
+      <div className="relative space-y-1.5 pt-8">
         {/* Time markers */}
         <div className="absolute top-0 left-0 w-full flex justify-between px-1 border-b border-zinc-800 pb-1.5">
           <span className="text-[10px] text-zinc-500 font-mono">
@@ -443,17 +443,19 @@ function Timeline({
           const width = ((end - start) / range) * 100;
 
           return (
-            <div key={s.uuid + s.loginTime} className="relative h-12 group/row">
-              <div className="absolute -top-5 left-0 text-[10px] text-zinc-500 font-mono truncate max-w-[200px] flex items-center gap-2">
-                <span className="text-zinc-300">{s.user}</span>
-                <span className="text-zinc-600">({fmtTime(s.loginTime)} - {s.logoutTime ? fmtTime(s.logoutTime) : "now"})</span>
-              </div>
+            <div key={s.uuid + s.loginTime} className="relative h-8 group/row">
               <div
-                className={`absolute top-0 h-6 rounded-full transition-all flex items-center ${
+                className={`absolute top-0 h-full rounded-lg transition-all flex items-center px-3 overflow-hidden ${
                   s.status === "returning" ? "bg-emerald-500/10 border border-emerald-500/30" : "bg-sky-500/10 border border-sky-500/30"
                 }`}
                 style={{ left: `${left}%`, width: `${Math.max(width, 0.5)}%` }}
               >
+                <div className="text-[10px] font-mono truncate whitespace-nowrap pointer-events-none flex items-center gap-2 shrink-0">
+                  <span className="text-zinc-200 font-medium">{s.user}</span>
+                  <span className="text-zinc-500 text-[9px]">
+                    {fmtTime(s.loginTime)} – {s.logoutTime ? fmtTime(s.logoutTime) : "now"}
+                  </span>
+                </div>
                 {/* Action markers */}
                 {s.actions.map((a, i) => {
                   const aTime = new Date(a.timestamp).getTime();
