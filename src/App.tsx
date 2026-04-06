@@ -226,21 +226,60 @@ function IpLabel({
     if (e.key === "Escape") setEditing(false);
   }
 
+  async function handleGeoLookup(e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      const resp = await fetch(`https://ipapi.co/${ip}/json/`);
+      if (!resp.ok) throw new Error("Fetch failed");
+      const data = await resp.json();
+      if (data.city && data.country_name) {
+        setDraft(`${data.city}, ${data.country_name}`);
+      } else {
+        throw new Error("Incomplete data");
+      }
+    } catch (err) {
+      window.open(`https://ipapi.co/${ip}/`, "_blank");
+    }
+  }
+
   if (editing) {
     return (
       <span
         className={`inline-flex items-center gap-1 ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
-        <input
-          ref={inputRef}
-          autoFocus
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commit}
-          onKeyDown={onKey}
-          className="font-mono text-xs bg-zinc-800 border border-zinc-600 rounded px-1.5 py-0.5 text-zinc-200 outline-none focus:border-sky-500 w-36"
-        />
+        <div className="relative flex items-center">
+          <input
+            ref={inputRef}
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={onKey}
+            className="font-mono text-xs bg-zinc-800 border border-zinc-600 rounded px-1.5 py-0.5 pr-7 text-zinc-200 outline-none focus:border-sky-500 w-44"
+          />
+          <button
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={handleGeoLookup}
+            title="Lookup geolocation"
+            className="absolute right-1 p-1 text-zinc-500 hover:text-sky-400 transition-colors"
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="2" y1="12" x2="22" y2="12" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+            </svg>
+          </button>
+        </div>
       </span>
     );
   }
