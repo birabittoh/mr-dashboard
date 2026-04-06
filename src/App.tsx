@@ -758,7 +758,26 @@ export default function App() {
 
   const totalActions = sessions.reduce((a, s) => a + s.actions.length, 0);
   const uniqueUsers = new Set(sessions.map((s) => s.uuid)).size;
-  const uniqueIPs = new Set(sessions.map((s) => s.ip)).size;
+  const allIPs = Array.from(new Set(sessions.map((s) => s.ip)));
+  const uniqueIPs = allIPs.length;
+  const unidentifiedIPs = allIPs.filter((ip) => !ipNames[ip]);
+
+  const handleBulkGeoLookup = useCallback(async () => {
+    for (const ip of unidentifiedIPs) {
+      try {
+        const resp = await fetch(`https://ipapi.co/${ip}/json/`);
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        if (data.city && data.country_name) {
+          handleRename(ip, `${data.city}, ${data.country_name}`);
+        }
+      } catch (err) {
+        // Skip on error for bulk to avoid spamming tabs
+      }
+      // Small delay to be nice to the API
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }, [unidentifiedIPs, handleRename]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 font-sans">
@@ -779,24 +798,34 @@ export default function App() {
             )}
           </div>
           {sessions.length > 0 && (
-            <label className="cursor-pointer">
-              <span className="text-xs text-zinc-400 border border-zinc-700 rounded-lg px-3 py-1.5 hover:border-zinc-500 hover:text-zinc-200 transition-colors">
-                Load file
-              </span>
-              <input
-                type="file"
-                accept=".log,.txt,text/plain"
-                className="hidden"
-                onChange={(e) => {
-                  if (e.target.files?.[0]) {
-                    const r = new FileReader();
-                    r.onload = (ev) =>
-                      handleFile(ev.target!.result as string, e.target.files![0].name);
-                    r.readAsText(e.target.files[0]);
-                  }
-                }}
-              />
-            </label>
+            <div className="flex items-center gap-2">
+              {unidentifiedIPs.length > 0 && (
+                <button
+                  onClick={handleBulkGeoLookup}
+                  className="text-[10px] uppercase tracking-wider font-bold text-sky-500 border border-sky-500/30 bg-sky-500/5 rounded-lg px-3 py-1.5 hover:bg-sky-500/10 transition-colors"
+                >
+                  Lookup {unidentifiedIPs.length} IP{unidentifiedIPs.length > 1 ? "s" : ""}
+                </button>
+              )}
+              <label className="cursor-pointer">
+                <span className="text-xs text-zinc-400 border border-zinc-700 rounded-lg px-3 py-1.5 hover:border-zinc-500 hover:text-zinc-200 transition-colors">
+                  Load file
+                </span>
+                <input
+                  type="file"
+                  accept=".log,.txt,text/plain"
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) {
+                      const r = new FileReader();
+                      r.onload = (ev) =>
+                        handleFile(ev.target!.result as string, e.target.files![0].name);
+                      r.readAsText(e.target.files[0]);
+                    }
+                  }}
+                />
+              </label>
+            </div>
           )}
         </div>
 
