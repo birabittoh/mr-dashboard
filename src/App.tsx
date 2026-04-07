@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -752,7 +752,33 @@ export default function App() {
   const [selected, setSelected] = useState<number | null>(null);
   const [multiSelected, setMultiSelected] = useState<Set<number>>(new Set());
   const [error, setError] = useState("");
-  const [ipNames, setIpNames] = useState<IpNames>({});
+  const [ipNames, setIpNames] = useState<IpNames>(() => {
+    try {
+      const saved = localStorage.getItem("ipNames");
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem("ipNames", JSON.stringify(ipNames));
+  }, [ipNames]);
+  useEffect(() => {
+    const savedContent = localStorage.getItem("lastLogContent");
+    const savedFilename = localStorage.getItem("lastLogFilename");
+    if (savedContent && savedFilename) {
+      try {
+        const s = parseLog(savedContent);
+        if (s.length) {
+          setSessions(s);
+          setFilename(savedFilename);
+        }
+      } catch (err) {
+        console.error("Failed to parse saved log:", err);
+      }
+    }
+  }, []);
   const actionsRef = useRef<HTMLDivElement>(null);
 
   const handleFile = useCallback((text: string, name: string) => {
@@ -765,7 +791,13 @@ export default function App() {
       setFilename(name);
       setSelected(null);
       setMultiSelected(new Set());
-      // preserve existing ip names across file reloads
+
+      try {
+        localStorage.setItem("lastLogContent", text);
+        localStorage.setItem("lastLogFilename", name);
+      } catch (err) {
+        console.warn("Failed to save log to localStorage:", err);
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Unknown parse error");
     }
