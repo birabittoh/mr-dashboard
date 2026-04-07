@@ -36,6 +36,9 @@ interface Session {
 
 type IpNames = Record<string, string>;
 
+const TARGET_TIMEZONE =
+  Intl.DateTimeFormat().resolvedOptions().timeZone || "Europe/Rome";
+
 // ── Parser ───────────────────────────────────────────────────────────────────
 
 function parseLog(raw: string): Session[] {
@@ -84,8 +87,8 @@ function parseLog(raw: string): Session[] {
         if (sess) {
           sess.logoutTime = ev.timestamp;
           sess.durationSec = Math.round(
-            (new Date(ev.timestamp).getTime() -
-              new Date(sess.loginTime).getTime()) /
+            (ensureUtc(ev.timestamp).getTime() -
+              ensureUtc(sess.loginTime).getTime()) /
               1000
           );
         }
@@ -97,18 +100,19 @@ function parseLog(raw: string): Session[] {
 
   const flat: Session[] = Object.values(openSessions).flat();
   for (const act of floatingActions) {
-    const t = new Date(act.timestamp).getTime();
+    const t = ensureUtc(act.timestamp).getTime();
     const target = flat.find((s) => {
       if (s.uuid !== act.uuid) return false;
-      const lo = new Date(s.loginTime).getTime();
-      const hi = s.logoutTime ? new Date(s.logoutTime).getTime() : Infinity;
+      const lo = ensureUtc(s.loginTime).getTime();
+      const hi = s.logoutTime ? ensureUtc(s.logoutTime).getTime() : Infinity;
       return t >= lo && t <= hi;
     });
     if (target) target.actions.push(act);
   }
 
   flat.sort(
-    (a, b) => new Date(a.loginTime).getTime() - new Date(b.loginTime).getTime()
+    (a, b) =>
+      ensureUtc(a.loginTime).getTime() - ensureUtc(b.loginTime).getTime()
   );
   return flat;
 }
@@ -121,14 +125,29 @@ function fmtDuration(sec: number | null): string {
   return `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }
 
+function ensureUtc(ts: string): Date {
+  // If it doesn't look like it has a timezone offset, assume UTC
+  if (!ts.includes("Z") && !/[+-]\d{2}:?\d{2}$/.test(ts)) {
+    return new Date(ts + "Z");
+  }
+  return new Date(ts);
+}
+
 function fmtTime(ts: string): string {
-  return new Date(ts).toISOString().slice(11, 19);
+  return ensureUtc(ts).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+    timeZone: TARGET_TIMEZONE,
+  });
 }
 
 function fmtDate(ts: string): string {
-  return new Date(ts).toLocaleDateString("en-GB", {
+  return ensureUtc(ts).toLocaleDateString("en-GB", {
     day: "numeric",
     month: "short",
+    timeZone: TARGET_TIMEZONE,
   });
 }
 
@@ -137,7 +156,8 @@ function parseLogTimestamp(filename: string): string | null {
   const match = filename.match(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
   if (!match) return null;
   const [, y, m, d, hh, mm, ss] = match;
-  const date = new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}`);
+  // Filenames are UTC per requirement
+  const date = new Date(`${y}-${m}-${d}T${hh}:${mm}:${ss}Z`);
   if (isNaN(date.getTime())) return null;
   return date.toLocaleString("en-GB", {
     day: "numeric",
@@ -146,6 +166,7 @@ function parseLogTimestamp(filename: string): string | null {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
+    timeZone: TARGET_TIMEZONE,
   });
 }
 
@@ -450,9 +471,9 @@ function Timeline({
 }) {
   if (sessions.length === 0) return null;
 
-  const startTimes = sessions.map((s) => new Date(s.loginTime).getTime());
+  const startTimes = sessions.map((s) => ensureUtc(s.loginTime).getTime());
   const endTimes = sessions.map((s) =>
-    s.logoutTime ? new Date(s.logoutTime).getTime() : Date.now()
+    s.logoutTime ? ensureUtc(s.logoutTime).getTime() : Date.now()
   );
 
   const minTime = Math.min(...startTimes);
@@ -468,16 +489,28 @@ function Timeline({
         {/* Time markers */}
         <div className="absolute top-0 left-0 w-full flex justify-between px-1 border-b border-zinc-800 pb-1.5">
           <span className="text-[10px] text-zinc-500 font-mono">
-            {new Date(minTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {new Date(minTime).toLocaleTimeString("en-GB", {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+              timeZone: TARGET_TIMEZONE,
+            })}
           </span>
           <span className="text-[10px] text-zinc-500 font-mono">
-            {new Date(maxTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {new Date(maxTime).toLocaleTimeString("en-GB", {
+              hour: "2-digit",
+              minute: "2-digit",
+              hour12: false,
+              timeZone: TARGET_TIMEZONE,
+            })}
           </span>
         </div>
 
         {sessions.map((s) => {
-          const start = new Date(s.loginTime).getTime();
-          const end = s.logoutTime ? new Date(s.logoutTime).getTime() : Date.now();
+          const start = ensureUtc(s.loginTime).getTime();
+          const end = s.logoutTime
+            ? ensureUtc(s.logoutTime).getTime()
+            : Date.now();
           const left = ((start - minTime) / range) * 100;
           const width = ((end - start) / range) * 100;
 
@@ -485,19 +518,22 @@ function Timeline({
             <div key={s.uuid + s.loginTime} className="relative h-8 group/row">
               <div
                 className={`absolute top-0 h-full rounded-lg transition-all flex items-center px-3 overflow-hidden ${
-                  s.status === "returning" ? "bg-emerald-500/10 border border-emerald-500/30" : "bg-sky-500/10 border border-sky-500/30"
+                  s.status === "returning"
+                    ? "bg-emerald-500/10 border border-emerald-500/30"
+                    : "bg-sky-500/10 border border-sky-500/30"
                 }`}
                 style={{ left: `${left}%`, width: `${Math.max(width, 0.5)}%` }}
               >
                 <div className="text-[10px] font-mono truncate whitespace-nowrap pointer-events-none flex items-center gap-2 shrink-0">
                   <span className="text-zinc-200 font-medium">{s.user}</span>
                   <span className="text-zinc-500 text-[9px]">
-                    {fmtTime(s.loginTime)} – {s.logoutTime ? fmtTime(s.logoutTime) : "now"}
+                    {fmtTime(s.loginTime)} –{" "}
+                    {s.logoutTime ? fmtTime(s.logoutTime) : "now"}
                   </span>
                 </div>
                 {/* Action markers */}
                 {s.actions.map((a, i) => {
-                  const aTime = new Date(a.timestamp).getTime();
+                  const aTime = ensureUtc(a.timestamp).getTime();
                   const aLeft = ((aTime - start) / (end - start || 1)) * 100;
                   const icon = ACTION_ICON[a.action] || ACTION_ICON.default;
 
@@ -766,6 +802,10 @@ export default function App() {
     for (const ip of unidentifiedIPs) {
       try {
         const resp = await fetch(`https://ipapi.co/${ip}/json/`);
+        if (resp.status === 429) {
+          setError("Bulk lookup rate limited. Please try again later.");
+          break;
+        }
         if (!resp.ok) continue;
         const data = await resp.json();
         if (data.city && data.country_name) {
@@ -774,8 +814,8 @@ export default function App() {
       } catch (err) {
         // Skip on error for bulk to avoid spamming tabs
       }
-      // Small delay to be nice to the API
-      await new Promise((r) => setTimeout(r, 200));
+      // Increased delay to avoid rate limits
+      await new Promise((r) => setTimeout(r, 2000));
     }
   }, [unidentifiedIPs, handleRename]);
 
